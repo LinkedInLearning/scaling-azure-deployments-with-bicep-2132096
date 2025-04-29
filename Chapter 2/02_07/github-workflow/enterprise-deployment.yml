@@ -1,0 +1,158 @@
+name: Enterprise Deployment  
+on:  
+  workflow_dispatch:  
+    inputs:  
+      environment:  
+        description: 'Target environment (dev, test, prod)'
+        required: true  
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      region:
+        description: 'Primary deployment region'
+        required: true
+        default: 'eastus'
+        type: choice
+        options:
+          - eastus
+          - eastus2
+          - westus
+          - westus2
+      workload:
+        description: 'Workload name'
+        required: true
+        default: 'shared'
+        type: string
+
+env:
+  AZURE_BICEP_PATH: ./main.bicep
+  PARAMETERS_PATH: ./shared/config/${{ github.event.inputs.environment }}.params.json
+
+jobs:  
+  validate-deployment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Install Bicep CLI
+        run: |
+          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          chmod +x ./bicep
+          mv ./bicep /usr/local/bin/bicep
+          bicep --version
+      
+      - name: Validate Bicep template
+        run: |
+          az bicep build --file ${{ env.AZURE_BICEP_PATH }}
+      
+      - name: What-If deployment analysis
+        run: |
+          az deployment sub what-if \
+            --location ${{ github.event.inputs.region }} \
+            --template-file ${{ env.AZURE_BICEP_PATH }} \
+            --parameters ${{ env.PARAMETERS_PATH }} \
+            --parameters location=${{ github.event.inputs.region }} \
+            --parameters environment=${{ github.event.inputs.environment }} \
+            --parameters workload=${{ github.event.inputs.workload }}
+
+  deploy-core:
+    needs: validate-deployment
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Deploy Core Infrastructure
+        id: deploy
+        run: |
+          DEPLOYMENT_ID=$(az deployment sub create \
+            --location ${{ github.event.inputs.region }} \
+            --template-file ${{ env.AZURE_BICEP_PATH }} \
+            --parameters ${{ env.PARAMETERS_PATH }} \
+            --parameters location=${{ github.event.inputs.region }} \
+            --parameters environment=${{ github.event.inputs.environment }} \
+            --parameters workload=${{ github.event.inputs.workload }} \
+            --output tsv \
+            --query 'name')
+          
+          echo "::set-output name=deployment_id::$DEPLOYMENT_ID"
+          
+          # Wait for the deployment to complete
+          az deployment sub wait --name $DEPLOYMENT_ID --created
+      
+      - name: Get Deployment Outputs
+        run: |
+          RESOURCE_GROUP=$(az deployment sub show \
+            --name ${{ steps.deploy.outputs.deployment_id }} \
+            --query properties.outputs.resourceGroupName.value \
+            --output tsv)
+          
+          echo "Resource Group: $RESOURCE_GROUP"
+          echo "::set-output name=resource_group::$RESOURCE_GROUP"
+          
+  deploy-regional:
+    needs: deploy-core
+    if: github.event.inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    strategy:
+      matrix:
+        region: ['eastus', 'westus']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Deploy Regional Workload
+        run: |
+          az deployment sub create \
+            --location ${{ matrix.region }} \
+            --template-file modules/apps/regional-workload.bicep \
+            --parameters environment=${{ github.event.inputs.environment }} \
+            --parameters location=${{ matrix.region }} \
+            --parameters workload=${{ github.event.inputs.workload }}
+          
+  post-deployment-validation:
+    needs: [deploy-core]
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      
+      - name: Validate Policy Compliance
+        run: |
+          echo "Running policy compliance check..."
+          # Azure CLI command to check policy compliance would go here
+          
+      - name: Security Scan
+        run: |
+          echo "Running security validation..."
+          # Security validation scripts would run here
+      
+      - name: Deployment Summary
+        run: |
+          echo "Deployment to ${{ github.event.inputs.environment }} environment completed successfully!"
+          echo "Region: ${{ github.event.inputs.region }}"
+          echo "Workload: ${{ github.event.inputs.workload }}"

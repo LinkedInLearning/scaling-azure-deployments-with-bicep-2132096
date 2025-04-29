@@ -1,0 +1,30 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "environment": {
+        "value": "prod"
+      },
+      "location": {
+        "value": "eastus2"
+      },
+      "sqlAdminUsername": {
+        "value": "adminuser"
+      },
+      "sqlAdminPassword": {
+        "value": "REPLACE_WITH_SECURE_PASSWORD"
+      },
+      "sqlSku": {
+        "value": "GP_Gen5"
+      },
+      "enableGeoReplication": {
+        "value": true
+      },
+      "cdnSku": {
+        "value": "Standard_Microsoft"
+      },
+      "runtime": {
+        "value": "dotnet"
+      }
+    }
+  }

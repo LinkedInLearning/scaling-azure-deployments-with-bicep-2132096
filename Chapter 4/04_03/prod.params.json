@@ -1,0 +1,46 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "environmentName": {
+        "value": "prod"
+      },
+      "location": {
+        "value": "eastus"
+      },
+      "secondaryLocation": {
+        "value": "westus"
+      },
+      "enableFailover": {
+        "value": true
+      },
+      "sqlAdminLogin": {
+        "reference": {
+          "keyVault": {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/key-vault-rg/providers/Microsoft.KeyVault/vaults/my-keyvault"
+          },
+          "secretName": "sqlAdminLogin"
+        }
+      },
+      "sqlAdminPassword": {
+        "reference": {
+          "keyVault": {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/key-vault-rg/providers/Microsoft.KeyVault/vaults/my-keyvault"
+          },
+          "secretName": "sqlAdminPassword"
+        }
+      },
+      "containerRegistry": {
+        "value": "myregistry.azurecr.io"
+      },
+      "appContainerImage": {
+        "value": "middleware-api"
+      },
+      "appContainerTag": {
+        "value": "v1.0.2"
+      },
+      "webAppName": {
+        "value": "prod-frontend-app"
+      }
+    }
+}

@@ -1,0 +1,203 @@
+name: Bicep Deployment
+on:
+  push:
+    branches: ['main']
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/setup-azure-cli@v3
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set Git Commit Variable
+        run: echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Validate Bicep
+        run: az bicep build --file main.bicep
+
+      - name: Preview Changes (What-If)
+        run: |
+          az deployment group what-if \
+            --resource-group rg-bicep-${{ github.ref_name == 'main' && 'dev' || github.event.inputs.environment }} \
+            --template-file main.bicep \
+            --parameters @${{ github.ref_name == 'main' && 'dev' || github.event.inputs.environment }}.params.json
+
+  deploy-dev:
+    needs: validate
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/setup-azure-cli@v3
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set Git Commit Variable
+        run: echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Deploy to Dev
+        run: |
+          az deployment group create \
+            --resource-group rg-bicep-dev \
+            --template-file main.bicep \
+            --parameters @dev.params.json \
+            --parameters tags.commit=${{ env.GIT_COMMIT }} \
+            --parameters tags.pipelineRun=${{ github.run_id }}
+
+      - name: Health Check
+        run: |
+          # Simple health check - check if storage account exists
+          STORAGE_ACCOUNT=$(az deployment group show \
+            --resource-group rg-bicep-dev \
+            --name main \
+            --query properties.outputs.storageAccountId.value \
+            --output tsv)
+          
+          if [[ -z "$STORAGE_ACCOUNT" ]]; then
+            echo "Storage account not found, deployment may have failed."
+            exit 1
+          fi
+
+  deploy-test:
+    needs: deploy-dev
+    if: github.event.inputs.environment == 'test' || github.event.inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/setup-azure-cli@v3
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set Git Commit Variable
+        run: echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Deploy to Test
+        run: |
+          az deployment group create \
+            --resource-group rg-bicep-test \
+            --template-file main.bicep \
+            --parameters @test.params.json \
+            --parameters tags.commit=${{ env.GIT_COMMIT }} \
+            --parameters tags.pipelineRun=${{ github.run_id }}
+
+      - name: Health Check
+        run: |
+          # Check if VM exists
+          VM_ID=$(az deployment group show \
+            --resource-group rg-bicep-test \
+            --name main \
+            --query properties.outputs.vmId.value \
+            --output tsv)
+          
+          if [[ -z "$VM_ID" ]]; then
+            echo "VM not found, deployment may have failed."
+            exit 1
+          fi
+
+  deploy-prod:
+    needs: deploy-test
+    if: github.event.inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    environment: prod # This requires approval in GitHub
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Azure CLI
+        uses: azure/setup-azure-cli@v3
+
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set Git Commit Variable
+        run: echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+
+      - name: Security Scan
+        run: |
+          # Example security scan - could be a real tool in production
+          echo "Running security scan before prod deployment..."
+          # ./scan-for-vulnerabilities.sh  # Uncomment and implement this
+          
+          # For demo, just checking for insecure patterns in Bicep
+          if grep -q "allowBlobPublicAccess: true" main.bicep; then
+            echo "WARNING: Public blob access enabled in prod deployment!"
+            # In a real pipeline, you might fail here: exit 1
+          fi
+
+      - name: Deploy to Prod
+        run: |
+          az deployment group create \
+            --resource-group rg-bicep-prod \
+            --template-file main.bicep \
+            --parameters @prod.params.json \
+            --parameters tags.commit=${{ env.GIT_COMMIT }} \
+            --parameters tags.pipelineRun=${{ github.run_id }}
+
+      - name: Health Check
+        id: health_check
+        run: |
+          # Comprehensive health check for prod
+          VNET_ID=$(az deployment group show \
+            --resource-group rg-bicep-prod \
+            --name main \
+            --query properties.outputs.vnetId.value \
+            --output tsv)
+          
+          VM_ID=$(az deployment group show \
+            --resource-group rg-bicep-prod \
+            --name main \
+            --query properties.outputs.vmId.value \
+            --output tsv)
+          
+          if [[ -z "$VNET_ID" || -z "$VM_ID" ]]; then
+            echo "Critical resources not found, deployment has failed."
+            exit 1
+          fi
+
+      - name: Rollback on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed, rolling back to previous version..."
+          LAST_GOOD_COMMIT=$(git rev-parse HEAD~1)
+          git checkout $LAST_GOOD_COMMIT
+          
+          az deployment group create \
+            --resource-group rg-bicep-prod \
+            --template-file main.bicep \
+            --parameters @prod.params.json \
+            --parameters tags.commit=$LAST_GOOD_COMMIT \
+            --parameters tags.pipelineRun=${{ github.run_id }}_rollback
